@@ -64,12 +64,28 @@ def run_pretraining(cfg):
     print(f"\nPre-trained model saved to {cfg.PRETRAINED_MODEL_PATH}")
 
 # Đoạn code để thực thi khi bạn chạy `python code/pretrain.py`
+# if __name__ == "__main__":
+#     seed_everything(cfg.SEED)
+#     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
+#     print(f"Thiết bị đang sử dụng: {cfg.DEVICE}")
+    
+#     if not os.path.exists(cfg.PRETRAINED_MODEL_PATH):
+#         run_pretraining(cfg)
+#     else:
+#         print(f"Đã tìm thấy file pre-train tại: {cfg.PRETRAINED_MODEL_PATH}. Bỏ qua bước tiền huấn luyện.")
 if __name__ == "__main__":
+    # --- ĐOẠN CODE THÊM MỚI ĐỂ XÓA FILE CŨ ---
+    if os.path.exists(cfg.PRETRAINED_MODEL_PATH):
+        print(f"Phát hiện model pre-train cũ tại: {cfg.PRETRAINED_MODEL_PATH}")
+        print("Đang xóa file để bắt đầu pre-train mới...")
+        os.remove(cfg.PRETRAINED_MODEL_PATH)
+        print("Đã xóa file cũ thành công.")
+    # ---------------------------------------------
+    
+    # Các lệnh khởi tạo khác
     seed_everything(cfg.SEED)
     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
     print(f"Thiết bị đang sử dụng: {cfg.DEVICE}")
     
-    if not os.path.exists(cfg.PRETRAINED_MODEL_PATH):
-        run_pretraining(cfg)
-    else:
-        print(f"Đã tìm thấy file pre-train tại: {cfg.PRETRAINED_MODEL_PATH}. Bỏ qua bước tiền huấn luyện.")
+    # Luôn chạy pre-training vì file cũ (nếu có) đã bị xóa
+    run_pretraining(cfg)
