@@ -172,14 +172,18 @@ class HAM10000Dataset(Dataset):
 DATASET_MEAN = [0.485, 0.456, 0.406]
 DATASET_STD  = [0.229, 0.224, 0.225]
 
+# --- PHIÊN BẢN SỬA LẠI (ỔN ĐỊNH HƠN) ---
 train_tf = A.Compose([
-    A.RandomResizedCrop(height=cfg.IMG_SIZE, width=cfg.IMG_SIZE, scale=(0.8, 1.0), p=0.8),
+    # Luôn resize ảnh về kích thước cố định ĐẦU TIÊN để đảm bảo đồng nhất
+    A.Resize(height=cfg.IMG_SIZE, width=cfg.IMG_SIZE), 
+
+    # Sau đó mới áp dụng các phép biến đổi khác
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
     A.RandomRotate90(p=0.5),
     A.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1, p=0.7),
     A.RandomBrightnessContrast(p=0.7),
-    A.Cutout(num_holes=8, max_h_size=24, max_w_size=24, fill_value=0, p=0.5),
+    A.CoarseDropout(max_holes=8, max_height=24, max_width=24, fill_value=0, p=0.5), # Sẽ sửa ở bước sau
     A.Normalize(mean=DATASET_MEAN, std=DATASET_STD),
     ToTensorV2(),
 ])
@@ -509,7 +513,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(trainval_df, trainval_df['
     print(f"\n{'='*30} FOLD {fold + 1}/{cfg.N_SPLITS} {'='*30}")
 
     # Bắt đầu theo dõi cho fold hiện tại
-    wandb.init(project="urticaria", name=f"finetune-fold-{fold+1}", config=vars(cfg), reinit=True)
+    wandb.init(project="skin-cancer-hpc", name=f"finetune-fold-{fold+1}", config=vars(cfg))
 
 
     train_fold_df, val_fold_df = trainval_df.iloc[train_idx], trainval_df.iloc[val_idx]
