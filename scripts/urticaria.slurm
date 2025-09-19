@@ -13,7 +13,8 @@
 # Yêu cầu tài nguyên: 1 node, 1 GPU, chạy trong 8 tiếng
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --time=08:00:00
+# Tạm thời sửa lại để chạy thử
+#SBATCH --time=00:30:00
 
 # ===============================================================
 # CÁC LỆNH SẼ ĐƯỢC THỰC THI
