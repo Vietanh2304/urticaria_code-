@@ -57,7 +57,7 @@ class Config:
     
     # Training
     N_SPLITS = 5
-    BATCH_SIZE = 32
+    BATCH_SIZE = 8
     EPOCHS_PRETRAIN = 100
     EPOCHS_FINETUNE = 100
     LR_FINETUNE = 2e-5
