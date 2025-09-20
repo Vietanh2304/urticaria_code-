@@ -53,8 +53,15 @@ def run_finetuning_and_evaluation(cfg):
     test_loader = DataLoader(test_ds, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=2)
     print(f"Train/Validation data size: {len(trainval_df)}, Test data size: {len(test_df)}")
 
+    # Lấy danh sách các lớp duy nhất
     class_labels = sorted(trainval_df['diagnostic'].unique())
-    class_weights = compute_class_weight(class_weight='balanced', classes=class_labels, y=trainval_df['diagnostic'])
+
+# Chuyển đổi danh sách sang dạng numpy array trước khi đưa vào hàm
+    class_weights = compute_class_weight(
+    class_weight='balanced', 
+    classes=np.array(class_labels), # <-- THAY ĐỔI CHÍNH Ở ĐÂY
+    y=trainval_df['diagnostic']
+)
     class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(cfg.DEVICE)
     print(f"Class Weights đã được tính toán: {class_weights_tensor.cpu().numpy().round(2)}")
 
