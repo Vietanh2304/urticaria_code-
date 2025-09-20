@@ -95,6 +95,25 @@ def remove_hair(image):
     inpainted_image = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
     return inpainted_image
 
+def preprocess_ham10000_metadata(df, target_meta_cols):
+    """
+    Xử lý metadata của HAM10000 để có cùng cấu trúc với PAD-UFES-20.
+    """
+    df = df.copy()
+    
+    # Chuẩn hóa các cột chung
+    df['age'].fillna(df['age'].median(), inplace=True)
+    df['sex'].fillna('unknown', inplace=True)
+    
+    # One-hot encoding cho các cột phân loại
+    df = pd.get_dummies(df, columns=['sex', 'localization'], prefix=['sex', 'loc'])
+    
+    # Bước quan trọng nhất: Sắp xếp lại các cột để khớp với target
+    # Các cột có trong target mà không có ở đây sẽ được tạo ra và điền giá trị 0
+    df_aligned = df.reindex(columns=target_meta_cols, fill_value=0)
+    
+    return df_aligned
+
 def preprocess_pad_metadata(df):
     df = df.copy()
     df['diameter_1'] = pd.to_numeric(df['diameter_1'], errors='coerce')
@@ -142,11 +161,13 @@ class PADUFESDataset(Dataset):
         return img, meta, label
 
 class HAM10000Dataset(Dataset):
-    def __init__(self, df, img_dirs, transform=None):
+    def __init__(self, df, meta_df, img_dirs, transform=None):
         self.df = df.reset_index(drop=True)
+        self.meta_df = meta_df.reset_index(drop=True) # <-- THÊM MỚI
         self.img_dirs = img_dirs
         self.transform = transform
         self.unified_label_map = {"BCC": 0, "MEL": 1, "NEV": 2, "AK": 3, "BKL": 4}
+        self.meta_arr = self.meta_df.values.astype("float32") # <-- THÊM MỚI
 
     def __len__(self): return len(self.df)
     def find_image_path(self, img_id):
@@ -162,7 +183,9 @@ class HAM10000Dataset(Dataset):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = remove_hair(img)
         if self.transform: img = self.transform(image=img)['image']
-        meta = torch.empty(0) 
+        
+        meta = torch.tensor(self.meta_arr[idx]) # <-- THAY ĐỔI
+        
         label = torch.tensor(self.unified_label_map[row['unified_dx']], dtype=torch.long)
         return img, meta, label
     
