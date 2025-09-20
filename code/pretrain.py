@@ -57,7 +57,9 @@ def run_pretraining(cfg):
         train_loss, train_metrics = train_one_epoch(model, train_loader, criterion, optimizer, cfg.DEVICE)
         val_loss, val_metrics = valid_one_epoch(model, val_loader, criterion, cfg.DEVICE)
         scheduler.step()
-        print(f"Epoch {epoch+1}/{cfg.EPOCHS_PRETRAIN} -> ...")
+        print(f"Epoch {epoch+1}/{cfg.EPOCHS_PRETRAIN}:")
+        print(f"  Train -> Loss: {train_loss:.4f} | BAcc: {train_metrics['bacc']:.4f} | AUC: {train_metrics['auc']:.4f}")
+        print(f"  Valid -> Loss: {val_loss:.4f} | BAcc: {val_metrics['bacc']:.4f} | AUC: {val_metrics['auc']:.4f}")
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0

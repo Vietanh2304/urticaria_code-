@@ -118,8 +118,8 @@ def run_finetuning_and_evaluation(cfg):
             history['train_acc'].append(train_metrics['acc']); history['val_acc'].append(val_metrics['acc'])
         
             print(f"Epoch {epoch+1}/{cfg.EPOCHS_FINETUNE}")
-            print(f"  Train -> Loss: {train_loss:.4f}, Acc: {train_metrics['acc']:.4f}, BAcc: {train_metrics['bacc']:.4f}")
-            print(f"  Valid -> Loss: {val_loss:.4f}, Acc: {val_metrics['acc']:.4f}, BAcc: {val_metrics['bacc']:.4f}")
+            print(f"  Train -> Loss: {train_loss:.4f}, Acc: {train_metrics['acc']:.4f}, BAcc: {train_metrics['bacc']:.4f}, AUC: {train_metrics['auc']:.4f}" )
+            print(f"  Valid -> Loss: {val_loss:.4f}, Acc: {val_metrics['acc']:.4f}, BAcc: {val_metrics['bacc']:.4f}, AUC: {val_metrics['auc']:.4f}")
 
             if val_metrics['bacc'] > best_val_bacc:
                 best_val_bacc = val_metrics['bacc']
