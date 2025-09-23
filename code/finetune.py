@@ -1,17 +1,14 @@
-# ===============================================================
-# IMPORTS
-# ===============================================================
 import os
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader
 from collections import defaultdict
 import torch
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import OneCycleLR
+# <<< THAY ĐỔI 1: Import scheduler mới
+from torch.optim.lr_scheduler import CosineAnnealingLR
 import gc
 import wandb
 import matplotlib.pyplot as plt
@@ -20,23 +17,15 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
 
-# Import các thành phần cần thiết từ file common.py
 from common import (
     cfg, seed_everything, PADUFESDataset, MMFNet, preprocess_pad_metadata,
-    valid_tf, train_tf, FocalLoss, train_one_epoch, valid_one_epoch, 
+    valid_tf, train_tf, FocalLoss, train_one_epoch, valid_one_epoch,
     plot_training_history, compute_metrics, DATASET_MEAN, DATASET_STD
 )
 
-# ===============================================================
-# HÀM CHÍNH CHO FINE-TUNING VÀ ĐÁNH GIÁ
-# ===============================================================
 def run_finetuning_and_evaluation(cfg):
-    """
-    Thực thi toàn bộ quá trình fine-tuning K-Fold và đánh giá cuối cùng trên tập test.
-    """
     print("\n" + "="*40 + "\n--- BẮT ĐẦU GIAI ĐOẠN FINE-TUNING VÀ ĐÁNH GIÁ ---\n" + "="*40)
-    
-    # --- 1. Chuẩn bị dữ liệu và class weights ---
+
     df = pd.read_csv(cfg.CSV_FILE)
     meta_df, meta_cols = preprocess_pad_metadata(df)
     trainval_df, test_df = train_test_split(df, test_size=0.15, stratify=df["diagnostic"], random_state=cfg.SEED)
@@ -53,22 +42,9 @@ def run_finetuning_and_evaluation(cfg):
     test_loader = DataLoader(test_ds, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=2)
     print(f"Train/Validation data size: {len(trainval_df)}, Test data size: {len(test_df)}")
 
-    # Lấy danh sách các lớp duy nhất
-    class_labels = sorted(trainval_df['diagnostic'].unique())
-
-# Chuyển đổi danh sách sang dạng numpy array trước khi đưa vào hàm
-    class_weights = compute_class_weight(
-    class_weight='balanced', 
-    classes=np.array(class_labels), # <-- THAY ĐỔI CHÍNH Ở ĐÂY
-    y=trainval_df['diagnostic']
-)
-    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(cfg.DEVICE)
-    print(f"Class Weights đã được tính toán: {class_weights_tensor.cpu().numpy().round(2)}")
-
-    # --- 2. Vòng lặp K-Fold ---
     skf = StratifiedKFold(n_splits=cfg.N_SPLITS, shuffle=True, random_state=cfg.SEED)
     fold_val_metrics = []
-    
+
     for fold, (train_idx, val_idx) in enumerate(skf.split(trainval_df, trainval_df['diagnostic'])):
         print(f"\n{'='*30} FOLD {fold + 1}/{cfg.N_SPLITS} {'='*30}")
         wandb.init(project="skin-cancer-hpc", name=f"finetune-fold-{fold+1}", config=vars(cfg))
@@ -77,7 +53,7 @@ def run_finetuning_and_evaluation(cfg):
         train_fold_meta, val_fold_meta = trainval_meta_scaled.iloc[train_idx], trainval_meta_scaled.iloc[val_idx]
         train_ds_fold = PADUFESDataset(train_fold_df, train_fold_meta, cfg.IMG_ROOTS, transform=train_tf)
         val_ds_fold = PADUFESDataset(val_fold_df, val_fold_meta, cfg.IMG_ROOTS, transform=valid_tf)
-        
+
         train_targets = train_fold_df['diagnostic'].map(train_ds_fold.label_map).values
         class_sample_count = np.array([np.sum(train_targets == i) for i in range(cfg.NUM_CLASSES_PAD)])
         weight = 1. / (class_sample_count + 1e-9)
@@ -92,33 +68,55 @@ def run_finetuning_and_evaluation(cfg):
         print("Loading pre-trained weights...")
         pretrained_dict = torch.load(cfg.PRETRAINED_MODEL_PATH, map_location=cfg.DEVICE)
         model_dict = model.state_dict()
-        pretrained_dict = {
-            k: v for k, v in pretrained_dict.items() 
-            if k in model_dict and "classifier" not in k}
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict and "classifier" not in k}
         model_dict.update(pretrained_dict)
         model.load_state_dict(model_dict)
-    
-        criterion = FocalLoss(gamma=2, weight=class_weights_tensor)
+
+        criterion = FocalLoss(gamma=2)
+
+        # GIAI ĐOẠN 1 - WARM-UP CLASSIFIER
+        print("\n--- Giai đoạn 1: Warm-up Classifier ---")
+        for name, param in model.named_parameters():
+            if "classifier" not in name:
+                param.requires_grad = False
+
+        warmup_optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3)
+
+        for epoch in range(5):
+            print(f"Warm-up Epoch {epoch+1}/5")
+            train_loss_wu, _ = train_one_epoch(model, train_loader_fold, criterion, warmup_optimizer, cfg.DEVICE)
+            val_loss_wu, _ = valid_one_epoch(model, val_loader_fold, criterion, cfg.DEVICE)
+            print(f"  Warm-up -> Train Loss: {train_loss_wu:.4f} | Valid Loss: {val_loss_wu:.4f}")
+
+        # GIAI ĐOẠN 2 - FINE-TUNE TOÀN BỘ MODEL
+        print("\n--- Giai đoạn 2: Fine-tune toàn bộ model ---")
+        for param in model.parameters():
+            param.requires_grad = True
+
         optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.LR_FINETUNE, weight_decay=cfg.WEIGHT_DECAY)
-        scheduler = OneCycleLR(optimizer, max_lr=cfg.LR_FINETUNE, 
-                               steps_per_epoch=len(train_loader_fold), epochs=cfg.EPOCHS_FINETUNE)
-        
+        # <<< THAY ĐỔI 2: Sử dụng CosineAnnealingLR
+        scheduler = CosineAnnealingLR(optimizer, T_max=cfg.EPOCHS_FINETUNE, eta_min=1e-7)
+
         best_val_bacc = 0.0
         patience_counter = 0
         history = defaultdict(list)
         best_metrics_for_fold = {}
 
         for epoch in range(cfg.EPOCHS_FINETUNE):
-            train_loss, train_metrics = train_one_epoch(model, train_loader_fold, criterion, optimizer, cfg.DEVICE, scheduler)
+            # <<< THAY ĐỔI 3: Bỏ scheduler khỏi train_one_epoch vì nó được cập nhật mỗi epoch
+            train_loss, train_metrics = train_one_epoch(model, train_loader_fold, criterion, optimizer, cfg.DEVICE)
             val_loss, val_metrics = valid_one_epoch(model, val_loader_fold, criterion, cfg.DEVICE)
-            
+
+            # <<< THAY ĐỔI 4: Cập nhật scheduler sau mỗi epoch
+            scheduler.step()
+
             history['train_loss'].append(train_loss); history['val_loss'].append(val_loss)
             history['train_bacc'].append(train_metrics['bacc']); history['val_bacc'].append(val_metrics['bacc'])
             history['train_auc'].append(train_metrics['auc']); history['val_auc'].append(val_metrics['auc'])
             history['train_acc'].append(train_metrics['acc']); history['val_acc'].append(val_metrics['acc'])
-        
+
             print(f"Epoch {epoch+1}/{cfg.EPOCHS_FINETUNE}")
-            print(f"  Train -> Loss: {train_loss:.4f}, Acc: {train_metrics['acc']:.4f}, BAcc: {train_metrics['bacc']:.4f}, AUC: {train_metrics['auc']:.4f}" )
+            print(f"  Train -> Loss: {train_loss:.4f}, Acc: {train_metrics['acc']:.4f}, BAcc: {train_metrics['bacc']:.4f}, AUC: {train_metrics['auc']:.4f}")
             print(f"  Valid -> Loss: {val_loss:.4f}, Acc: {val_metrics['acc']:.4f}, BAcc: {val_metrics['bacc']:.4f}, AUC: {val_metrics['auc']:.4f}")
 
             if val_metrics['bacc'] > best_val_bacc:
@@ -132,27 +130,26 @@ def run_finetuning_and_evaluation(cfg):
                 patience_counter += 1
                 if patience_counter >= cfg.PATIENCE:
                     print(f"  >> Early stopping at epoch {epoch+1}."); break
-        
+
         wandb.finish()
-        
+
         if best_metrics_for_fold:
             fold_val_metrics.append(best_metrics_for_fold)
-            
-        # plot_training_history(history, fold + 1) # Có thể comment dòng này đi để không bị treo khi chạy trên server
-        
+
         del model, train_loader_fold, val_loader_fold, history, best_metrics_for_fold
         gc.collect()
         torch.cuda.empty_cache()
 
     print(f"\n{'='*30} K-FOLD TRAINING COMPLETE {'='*30}")
 
-    # --- 3. Đánh giá cuối cùng trên tập Test (Ensembling + TTA) ---
     if not fold_val_metrics:
         print("Bỏ qua đánh giá cuối cùng vì training chưa hoàn tất.")
         return
 
     print("\n" + "="*40 + "\n--- ĐÁNH GIÁ CUỐI CÙNG TRÊN TẬP TEST ---\n" + "="*40)
 
+    # ... Phần code đánh giá cuối cùng không thay đổi ...
+    # (Giữ nguyên phần TTA và Ensembling)
     tta_transforms = [
         A.Compose([A.Resize(height=cfg.IMG_SIZE, width=cfg.IMG_SIZE), A.Normalize(mean=DATASET_MEAN, std=DATASET_STD), ToTensorV2()]),
         A.Compose([A.Resize(height=cfg.IMG_SIZE, width=cfg.IMG_SIZE), A.HorizontalFlip(p=1.0), A.Normalize(mean=DATASET_MEAN, std=DATASET_STD), ToTensorV2()]),
@@ -181,13 +178,13 @@ def run_finetuning_and_evaluation(cfg):
         for imgs_tensor, metas, labels in tqdm(test_loader, desc="Ensembling + TTA on Test Set"):
             metas = metas.to(cfg.DEVICE)
             batch_tta_probs = []
-            
+
             imgs_numpy = imgs_tensor.cpu().numpy().transpose(0, 2, 3, 1)
 
             for tta_tf in tta_transforms:
                 tta_imgs_list = [tta_tf(image=img)['image'] for img in imgs_numpy]
                 tta_imgs = torch.stack(tta_imgs_list).to(cfg.DEVICE)
-                
+
                 batch_ensemble_probs = [F.softmax(model(tta_imgs, metas), dim=1).cpu().numpy() for model in ensemble_models]
                 avg_ensemble_prob = np.mean(batch_ensemble_probs, axis=0)
                 batch_tta_probs.append(avg_ensemble_prob)
@@ -213,13 +210,12 @@ def run_finetuning_and_evaluation(cfg):
     disp.plot(ax=ax, cmap="Blues", values_format="d")
     plt.title("Ensemble + TTA Confusion Matrix on Test Set")
     plt.xticks(rotation=45)
-    
+
     cm_path = os.path.join(cfg.OUTPUT_DIR, "confusion_matrix.png")
     plt.savefig(cm_path, bbox_inches='tight')
     print(f"Confusion matrix saved to {cm_path}")
-    
-    # Khởi tạo một lần chạy WandB cuối cùng để lưu kết quả tổng kết
-    wandb.init(project="skin-cancer-hpc", name="final_evaluation", config=vars(cfg))
+
+    wandb.init(project="skin-cancer-hpc", name="final_evaluation", config=vars(cfg), resume="allow")
     wandb.log({
         "final_test_accuracy": final_metrics['acc'],
         "final_test_bacc": final_metrics['bacc'],
@@ -229,14 +225,11 @@ def run_finetuning_and_evaluation(cfg):
     wandb.finish()
 
 
-# ===============================================================
-# ĐOẠN CODE THỰC THI CHÍNH
-# ===============================================================
 if __name__ == "__main__":
     seed_everything(cfg.SEED)
     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
     print(f"Thiết bị đang sử dụng: {cfg.DEVICE}")
-    
+
     if not os.path.exists(cfg.PRETRAINED_MODEL_PATH):
         print(f"Lỗi: Không tìm thấy file model đã pre-train tại {cfg.PRETRAINED_MODEL_PATH}")
         print("Vui lòng chạy pretrain.py trước.")

@@ -5,12 +5,12 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import matplotlib.pyplot as plt
-from tqdm import tqdm # <-- THAY ĐỔI: Dùng tqdm cho terminal
+from tqdm import tqdm
 import time
 from collections import defaultdict
 import gc
 import cv2
-import wandb # <-- THÊM MỚI: Tích hợp Weights & Biases
+import wandb
 
 import torch
 import torch.nn as nn
@@ -27,7 +27,7 @@ from albumentations.pytorch import ToTensorV2
 
 # --- Configuration Class ---
 class Config:
-    # Paths (ĐÃ ĐƯỢC THAY ĐỔI ĐỂ LINH HOẠT)
+    # Paths
     BASE_DIR = "./data/Skin_cancer"
     CSV_FILE = os.path.join(BASE_DIR, "metadata.csv")
     IMG_ROOTS = [
@@ -61,13 +61,15 @@ class Config:
     BATCH_SIZE = 16
     EPOCHS_PRETRAIN = 100
     EPOCHS_FINETUNE = 100
-    LR_FINETUNE = 2e-5
+    # <<< THAY ĐỔI 1: Giảm learning rate cho giai đoạn fine-tune chính
+    LR_FINETUNE = 5e-6 
     LR_PRETRAIN = 3e-4
     WEIGHT_DECAY = 1e-2
     PATIENCE = 15
-    DROPOUT_RATE = 0.4
+    # <<< THAY ĐỔI 2: Giảm Dropout Rate
+    DROPOUT_RATE = 0.2
 
-# Khởi tạo Config và đặt Seed
+# Khởi tạo Config
 cfg = Config()
 
 def seed_everything(seed):
@@ -85,7 +87,7 @@ print(f"Device: {cfg.DEVICE}")
 
 
 # ===============================================================
-# Cell 2: DATASET & PREPROCESSING
+# DATASET & PREPROCESSING
 # ===============================================================
 def remove_hair(image):
     img_gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
@@ -96,22 +98,11 @@ def remove_hair(image):
     return inpainted_image
 
 def preprocess_ham10000_metadata(df, target_meta_cols):
-    """
-    Xử lý metadata của HAM10000 để có cùng cấu trúc với PAD-UFES-20.
-    """
     df = df.copy()
-    
-    # Chuẩn hóa các cột chung
     df['age'].fillna(df['age'].median(), inplace=True)
     df['sex'].fillna('unknown', inplace=True)
-    
-    # One-hot encoding cho các cột phân loại
     df = pd.get_dummies(df, columns=['sex', 'localization'], prefix=['sex', 'loc'])
-    
-    # Bước quan trọng nhất: Sắp xếp lại các cột để khớp với target
-    # Các cột có trong target mà không có ở đây sẽ được tạo ra và điền giá trị 0
     df_aligned = df.reindex(columns=target_meta_cols, fill_value=0)
-    
     return df_aligned
 
 def preprocess_pad_metadata(df):
@@ -163,11 +154,11 @@ class PADUFESDataset(Dataset):
 class HAM10000Dataset(Dataset):
     def __init__(self, df, meta_df, img_dirs, transform=None):
         self.df = df.reset_index(drop=True)
-        self.meta_df = meta_df.reset_index(drop=True) # <-- THÊM MỚI
+        self.meta_df = meta_df.reset_index(drop=True)
         self.img_dirs = img_dirs
         self.transform = transform
         self.unified_label_map = {"BCC": 0, "MEL": 1, "NEV": 2, "AK": 3, "BKL": 4}
-        self.meta_arr = self.meta_df.values.astype("float32") # <-- THÊM MỚI
+        self.meta_arr = self.meta_df.values.astype("float32")
 
     def __len__(self): return len(self.df)
     def find_image_path(self, img_id):
@@ -183,31 +174,25 @@ class HAM10000Dataset(Dataset):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = remove_hair(img)
         if self.transform: img = self.transform(image=img)['image']
-        
-        meta = torch.tensor(self.meta_arr[idx]) # <-- THAY ĐỔI
-        
+        meta = torch.tensor(self.meta_arr[idx])
         label = torch.tensor(self.unified_label_map[row['unified_dx']], dtype=torch.long)
         return img, meta, label
     
-
 # ===============================================================
-# Cell 3: DATA AUGMENTATION (NÂNG CAO)
+# DATA AUGMENTATION
 # ===============================================================
 DATASET_MEAN = [0.485, 0.456, 0.406]
 DATASET_STD  = [0.229, 0.224, 0.225]
 
-# --- PHIÊN BẢN SỬA LẠI (ỔN ĐỊNH HƠN) ---
 train_tf = A.Compose([
-    # Luôn resize ảnh về kích thước cố định ĐẦU TIÊN để đảm bảo đồng nhất
     A.Resize(height=cfg.IMG_SIZE, width=cfg.IMG_SIZE), 
-
-    # Sau đó mới áp dụng các phép biến đổi khác
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
     A.RandomRotate90(p=0.5),
     A.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1, p=0.7),
     A.RandomBrightnessContrast(p=0.7),
-    A.CoarseDropout(max_holes=8, max_height=24, max_width=24, fill_value=0, p=0.5), # Sẽ sửa ở bước sau
+    # <<< THAY ĐỔI 3: Vô hiệu hóa CoarseDropout để tránh xóa mất vùng tổn thương
+    # A.CoarseDropout(max_holes=8, max_height=24, max_width=24, fill_value=0, p=0.5),
     A.Normalize(mean=DATASET_MEAN, std=DATASET_STD),
     ToTensorV2(),
 ])
@@ -219,7 +204,7 @@ valid_tf = A.Compose([
 ])
 
 # ===============================================================
-# Cell 4: KIẾN TRÚC TỐI ƯU NHẤT (RESNET VỚI ENHANCED CBAM)
+# MODEL ARCHITECTURE (No changes needed here)
 # ===============================================================
 class EnhancedChannelAttention(nn.Module):
     def __init__(self, in_planes, ratio=16):
@@ -339,7 +324,7 @@ class MMFNet(nn.Module):
         return logits
 
 # ===============================================================
-# Cell 5: LOSS FUNCTIONS & TRAINING LOOPS (TỐI ƯU HÓA)
+# LOSS FUNCTIONS & TRAINING LOOPS (No changes needed here)
 # ===============================================================
 class FocalLoss(nn.Module):
     def __init__(self, alpha=1, gamma=2, reduction='mean', weight=None):
@@ -388,7 +373,6 @@ def train_one_epoch(model, loader, criterion, optimizer, device, scheduler=None)
     all_probs = np.vstack(all_probs)
     epoch_metrics = compute_metrics(all_labels, all_probs)
     
-    # <-- THÊM MỚI: Gửi log training lên WandB
     wandb.log({
         "train_loss": epoch_loss, "train_acc": epoch_metrics['acc'],
         "train_bacc": epoch_metrics['bacc'], "train_auc": epoch_metrics['auc'],
@@ -414,7 +398,6 @@ def valid_one_epoch(model, loader, criterion, device):
     all_probs = np.vstack(all_probs)
     epoch_metrics = compute_metrics(all_labels, all_probs)
     
-    # <-- THÊM MỚI: Gửi log validation lên WandB
     wandb.log({
         "val_loss": epoch_loss, "val_acc": epoch_metrics['acc'],
         "val_bacc": epoch_metrics['bacc'], "val_auc": epoch_metrics['auc']
@@ -438,4 +421,4 @@ def plot_training_history(history, fold):
     ax2.grid(True)
     plt.show()
 
-print("Loss function và training loops đã được cập nhật.")
+print("Common components loaded.")
