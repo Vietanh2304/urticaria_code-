@@ -4,11 +4,9 @@ import numpy as np
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
-# <<< THÊM MỚI: Import các hàm metrics bị thiếu >>>
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
-# <<< THAY ĐỔI: Cập nhật cú pháp amp để sửa cảnh báo >>>
 from torch.amp import GradScaler, autocast
 import wandb
 from tqdm import tqdm
@@ -64,8 +62,8 @@ def run_pretraining(cfg):
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.LR_PRETRAIN, weight_decay=cfg.WEIGHT_DECAY)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
     
-    # <<< THAY ĐỔI: Cập nhật cú pháp GradScaler >>>
-    scaler = GradScaler(device_type='cuda')
+    # <<< THAY ĐỔI: Xóa tham số `device_type` không hợp lệ >>>
+    scaler = GradScaler()
     accumulation_steps = 4
     
     best_val_loss = float('inf')
@@ -79,7 +77,6 @@ def run_pretraining(cfg):
         for i, (imgs, metas, labels) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1} Train")):
             imgs, metas, labels = imgs.to(cfg.DEVICE), metas.to(cfg.DEVICE), labels.to(cfg.DEVICE)
             
-            # <<< THAY ĐỔI: Cập nhật cú pháp autocast >>>
             with autocast(device_type='cuda', dtype=torch.float16):
                 logits = model(imgs, metas)
                 loss = criterion(logits, labels)
