@@ -1,14 +1,15 @@
-# -*- coding: utf-8 -*-
 import os
 import pandas as pd
 import numpy as np
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
+# <<< THÊM MỚI: Import các hàm metrics bị thiếu >>>
+from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
-# <<< THÊM MỚI: Import thư viện cho AMP
-from torch.cuda.amp import GradScaler, autocast
+# <<< THAY ĐỔI: Cập nhật cú pháp amp để sửa cảnh báo >>>
+from torch.amp import GradScaler, autocast
 import wandb
 from tqdm import tqdm
 
@@ -23,7 +24,6 @@ def run_pretraining(cfg):
     print("\n" + "="*40 + "\n--- BƯỚC 1: TIỀN HUẤN LUYỆN TRÊN HAM10000 ---\n" + "="*40)
     wandb.init(project="skin-cancer-hpc", name="pretraining_improved", config=vars(cfg))
 
-    # --- LOGIC XỬ LÝ METADATA ---
     pad_df_for_cols = pd.read_csv(cfg.CSV_FILE)
     _, target_meta_cols = preprocess_pad_metadata(pad_df_for_cols)
     meta_dim = len(target_meta_cols)
@@ -41,10 +41,8 @@ def run_pretraining(cfg):
     train_meta_df = ham_meta_df_processed.loc[train_df.index]
     val_meta_df = ham_meta_df_processed.loc[val_df.index]
 
-    # <<< THÊM MỚI: TÍNH TOÁN CLASS WEIGHTS (QUAN TRỌNG NHẤT) >>>
     print("Tính toán class weights cho tập train HAM10000...")
     train_labels = train_df['unified_dx']
-    # Lấy class names theo đúng thứ tự label map trong class Dataset
     temp_ds = HAM10000Dataset(train_df.head(1), train_meta_df.head(1), cfg.HAM10000_IMG_DIRS)
     class_names = sorted(temp_ds.unified_label_map, key=temp_ds.unified_label_map.get)
     
@@ -56,40 +54,36 @@ def run_pretraining(cfg):
     class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(cfg.DEVICE)
     print(f"Class weights cho pre-training: {class_weights_tensor.cpu().numpy().round(2)}")
     
-    # Khởi tạo Dataset
     train_ds = HAM10000Dataset(train_df, train_meta_df, cfg.HAM10000_IMG_DIRS, transform=train_tf)
     val_ds = HAM10000Dataset(val_df, val_meta_df, cfg.HAM10000_IMG_DIRS, transform=valid_tf)
     train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=2)
     val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=2)
 
-    # Khởi tạo model, loss, optimizer
     model = MMFNet(meta_dim=meta_dim, cfg=cfg, num_classes=cfg.NUM_CLASSES_PRETRAIN).to(cfg.DEVICE)
-    # <<< THAY ĐỔI: Áp dụng class weights vào FocalLoss >>>
     criterion = FocalLoss(gamma=2, weight=class_weights_tensor)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.LR_PRETRAIN, weight_decay=cfg.WEIGHT_DECAY)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
     
-    # <<< THÊM MỚI: Khởi tạo GradScaler cho AMP và Gradient Accumulation >>>
-    scaler = GradScaler()
-    accumulation_steps = 4  # Effective batch size = 16 * 4 = 64
+    # <<< THAY ĐỔI: Cập nhật cú pháp GradScaler >>>
+    scaler = GradScaler(device_type='cuda')
+    accumulation_steps = 4
     
     best_val_loss = float('inf')
     patience_counter = 0
 
-    # Vòng lặp training chính
     for epoch in range(cfg.EPOCHS_PRETRAIN):
-        # --- TRAINING EPOCH ---
         model.train()
         total_train_loss = 0.0
-        optimizer.zero_grad() # Xóa grad ở đầu epoch
+        optimizer.zero_grad()
         
         for i, (imgs, metas, labels) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1} Train")):
             imgs, metas, labels = imgs.to(cfg.DEVICE), metas.to(cfg.DEVICE), labels.to(cfg.DEVICE)
             
-            with autocast():
+            # <<< THAY ĐỔI: Cập nhật cú pháp autocast >>>
+            with autocast(device_type='cuda', dtype=torch.float16):
                 logits = model(imgs, metas)
                 loss = criterion(logits, labels)
-                loss = loss / accumulation_steps # Chuẩn hóa loss cho accumulation
+                loss = loss / accumulation_steps
             
             scaler.scale(loss).backward()
             
@@ -103,14 +97,13 @@ def run_pretraining(cfg):
         avg_train_loss = total_train_loss / len(train_loader.dataset)
         wandb.log({"pretrain_train_loss": avg_train_loss, "epoch": epoch})
 
-        # --- VALIDATION EPOCH ---
         model.eval()
         total_val_loss = 0.0
         all_labels, all_probs = [], []
         with torch.no_grad():
             for imgs, metas, labels in tqdm(val_loader, desc=f"Epoch {epoch+1} Valid"):
                 imgs, metas, labels = imgs.to(cfg.DEVICE), metas.to(cfg.DEVICE), labels.to(cfg.DEVICE)
-                with autocast():
+                with autocast(device_type='cuda', dtype=torch.float16):
                     logits = model(imgs, metas)
                     loss = criterion(logits, labels)
                 total_val_loss += loss.item() * imgs.size(0)
@@ -119,7 +112,6 @@ def run_pretraining(cfg):
 
         avg_val_loss = total_val_loss / len(val_loader.dataset)
         
-        # Tính toán metrics
         all_labels = np.concatenate(all_labels)
         all_probs = np.vstack(all_probs)
         y_pred = np.argmax(all_probs, axis=1)
@@ -153,16 +145,7 @@ def run_pretraining(cfg):
     wandb.finish()
     print(f"\nPre-trained model saved to {cfg.PRETRAINED_MODEL_PATH}")
 
-# Đoạn code để thực thi khi bạn chạy `python code/pretrain.py`
-# if __name__ == "__main__":
-#     seed_everything(cfg.SEED)
-#     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
-#     print(f"Thiết bị đang sử dụng: {cfg.DEVICE}")
-    
-#     if not os.path.exists(cfg.PRETRAINED_MODEL_PATH):
-#         run_pretraining(cfg)
-#     else:
-#         print(f"Đã tìm thấy file pre-train tại: {cfg.PRETRAINED_MODEL_PATH}. Bỏ qua bước tiền huấn luyện.")
+
 if __name__ == "__main__":
     if os.path.exists(cfg.PRETRAINED_MODEL_PATH):
         print(f"Phát hiện model pre-train cũ tại: {cfg.PRETRAINED_MODEL_PATH}")
@@ -175,3 +158,13 @@ if __name__ == "__main__":
     print(f"Thiết bị đang sử dụng: {cfg.DEVICE}")
     
     run_pretraining(cfg)
+# Đoạn code để thực thi khi bạn chạy `python code/pretrain.py`
+# if __name__ == "__main__":
+#     seed_everything(cfg.SEED)
+#     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
+#     print(f"Thiết bị đang sử dụng: {cfg.DEVICE}")
+    
+#     if not os.path.exists(cfg.PRETRAINED_MODEL_PATH):
+#         run_pretraining(cfg)
+#     else:
+#         print(f"Đã tìm thấy file pre-train tại: {cfg.PRETRAINED_MODEL_PATH}. Bỏ qua bước tiền huấn luyện.")

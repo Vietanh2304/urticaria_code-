@@ -99,8 +99,9 @@ def remove_hair(image):
 
 def preprocess_ham10000_metadata(df, target_meta_cols):
     df = df.copy()
-    df['age'].fillna(df['age'].median(), inplace=True)
-    df['sex'].fillna('unknown', inplace=True)
+    # <<< THAY ĐỔI: Sửa cú pháp fillna để loại bỏ cảnh báo >>>
+    df['age'] = df['age'].fillna(df['age'].median())
+    df['sex'] = df['sex'].fillna('unknown')
     df = pd.get_dummies(df, columns=['sex', 'localization'], prefix=['sex', 'loc'])
     df_aligned = df.reindex(columns=target_meta_cols, fill_value=0)
     return df_aligned
@@ -109,11 +110,13 @@ def preprocess_pad_metadata(df):
     df = df.copy()
     df['diameter_1'] = pd.to_numeric(df['diameter_1'], errors='coerce')
     df['diameter_2'] = pd.to_numeric(df['diameter_2'], errors='coerce')
-    df.fillna({'diameter_1': df['diameter_1'].median(), 'diameter_2': df['diameter_2'].median()}, inplace=True)
+    # <<< THAY ĐỔI: Sửa cú pháp fillna để loại bỏ cảnh báo >>>
+    df.fillna({'diameter_1': df['diameter_1'].median(), 'diameter_2': df['diameter_2'].median()}, inplace=True) # Cách này vẫn ổn
     df['lesion_area'] = df['diameter_1'] * df['diameter_2']
     df['aspect_ratio'] = df['diameter_1'] / (df['diameter_2'] + 1e-6)
     
     num_cols = ["age", "diameter_1", "diameter_2", "lesion_area", "aspect_ratio"]
+    # <<< THAY ĐỔI: Sửa cú pháp fillna để loại bỏ cảnh báo >>>
     df['age'] = pd.to_numeric(df['age'], errors="coerce").fillna(df['age'].median())
 
     bool_cols = ["smoke", "drink", "pesticide", "skin_cancer_history", "cancer_history", "itch", "grew", "hurt", "changed", "bleed", "biopsed"]
@@ -123,7 +126,6 @@ def preprocess_pad_metadata(df):
     cat_cols = ["gender", "region", "fitspatrick"]
     df_meta = pd.get_dummies(df[num_cols + bool_cols + cat_cols], columns=[c for c in cat_cols if c in df.columns])
     return df_meta, list(df_meta.columns)
-
 class PADUFESDataset(Dataset):
     def __init__(self, df, meta_df, img_roots, transform=None):
         self.df = df.reset_index(drop=True)
