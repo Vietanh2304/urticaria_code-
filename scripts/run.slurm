@@ -40,6 +40,6 @@ echo "--- Đã kích hoạt môi trường, bắt đầu chạy script Python --
 
 # Chạy file training chính
 # Thêm -u để output không bị buffer (log ra ngay lập tức)
-python -u train.py
+python -u code/train.py
 
 echo "Job finished."
