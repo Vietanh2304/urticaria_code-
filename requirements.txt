@@ -1,13 +1,19 @@
-torch
-torchvision
-torchaudio
+# --- Gói PyTorch (torch, torchvision, torchaudio) ---
+# --- PHẢI CÀI ĐẶT THỦ CÔNG TRƯỚC THEO PHIÊN BẢN CUDA ---
+# --- Ví dụ: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 ---
+
+# Gói khoa học & dữ liệu
 numpy<2.0
-albumentations==1.3.1
 pandas
 scikit-learn
+opencv-python-headless
+Pillow
+
+# Tăng cường ảnh
+albumentations==1.3.1
+
+# Trực quan hóa & tiện ích
 matplotlib
 tqdm
 wandb
 jupyter
-opencv-python-headless
-Pillow
